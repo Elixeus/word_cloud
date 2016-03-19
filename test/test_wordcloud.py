@@ -1,5 +1,6 @@
-from wordcloud import WordCloud
+from wordcloud import WordCloud, get_single_color_func
 import numpy as np
+from random import Random
 from nose.tools import assert_equal, assert_greater, assert_true, assert_raises
 from numpy.testing import assert_array_equal
 from PIL import Image
@@ -51,6 +52,14 @@ def test_default():
 
     # check size
     assert_equal(wc_array.shape, (wc.height, wc.width, 3))
+
+
+def test_stopwords_lowercasing():
+    # test that capitalized stopwords work.
+    wc = WordCloud(stopwords=["Beautiful"])
+    processed = wc.process_text(THIS)
+    words = [count[0] for count in processed]
+    assert_true("Beautiful" not in words)
 
 
 def test_writing_to_file():
@@ -129,6 +138,35 @@ def test_mask():
     assert_equal(mask.shape, wc_array.shape[:2])
     assert_array_equal(wc_array[mask != 0], 0)
     assert_greater(wc_array[mask == 0].sum(), 10000)
+
+
+def test_single_color_func():
+    # test single color function for different color formats
+    random = Random(42)
+
+    red_function = get_single_color_func('red')
+    assert_equal(red_function(random_state=random), 'rgb(181, 0, 0)')
+
+    hex_function = get_single_color_func('#00b4d2')
+    assert_equal(hex_function(random_state=random), 'rgb(0, 48, 56)')
+
+    rgb_function = get_single_color_func('rgb(0,255,0)')
+    assert_equal(rgb_function(random_state=random), 'rgb(0, 107, 0)')
+
+    rgb_perc_fun = get_single_color_func('rgb(80%,60%,40%)')
+    assert_equal(rgb_perc_fun(random_state=random), 'rgb(97, 72, 48)')
+
+    hsl_function = get_single_color_func('hsl(0,100%,50%)')
+    assert_equal(hsl_function(random_state=random), 'rgb(201, 0, 0)')
+
+
+def test_single_color_func_grey():
+    # grey is special as it's a corner case
+    random = Random(42)
+
+    red_function = get_single_color_func('darkgrey')
+    assert_equal(red_function(random_state=random), 'rgb(181, 181, 181)')
+    assert_equal(red_function(random_state=random), 'rgb(56, 56, 56)')
 
 
 def check_parameters():

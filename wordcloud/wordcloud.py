@@ -10,10 +10,12 @@ from random import Random
 import os
 import re
 import sys
+import colorsys
 import numpy as np
 from operator import itemgetter
 
 from PIL import Image
+from PIL import ImageColor
 from PIL import ImageDraw
 from PIL import ImageFont
 
@@ -76,6 +78,39 @@ def random_color_func(word=None, font_size=None, position=None,
     if random_state is None:
         random_state = Random()
     return "hsl(%d, 80%%, 50%%)" % random_state.randint(0, 255)
+
+
+def get_single_color_func(color):
+    """Create a color function which returns a single hue and saturation with.
+    different values (HSV). Accepted values are color strings as usable by PIL/Pillow.
+
+    >>> color_func1 = get_single_color_func('deepskyblue')
+    >>> color_func2 = get_single_color_func('#00b4d2')
+    """
+    old_r, old_g, old_b = ImageColor.getrgb(color)
+    rgb_max = 255.
+    h, s, v = colorsys.rgb_to_hsv(old_r / rgb_max, old_g / rgb_max, old_b / rgb_max)
+
+    def single_color_func(word=None, font_size=None, position=None,
+                          orientation=None, font_path=None, random_state=None):
+        """Random color generation.
+
+        Additional coloring method. It picks a random value with hue and
+        saturation based on the color given to the generating function.
+
+        Parameters
+        ----------
+        word, font_size, position, orientation  : ignored.
+
+        random_state : random.Random object or None, (default=None)
+          If a random object is given, this is used for generating random numbers.
+
+        """
+        if random_state is None:
+            random_state = Random()
+        r, g, b = colorsys.hsv_to_rgb(h, s, random_state.uniform(0.2, 1))
+        return 'rgb({:.0f}, {:.0f}, {:.0f})'.format(r * rgb_max, g * rgb_max, b * rgb_max)
+    return single_color_func
 
 
 class WordCloud(object):
@@ -141,6 +176,10 @@ class WordCloud(object):
         If you want to consider the word frequencies and not only their rank, relative_scaling
         around .5 often looks good.
 
+    regexp : string or None (optional)
+        Regular expression to split the input text into tokens in process_text.
+        If None is specified, ``r"\w[\w']+"`` is used.
+
     Attributes
     ----------
     ``words_``: list of tuples (string, float)
@@ -164,9 +203,7 @@ class WordCloud(object):
                  ranks_only=None, prefer_horizontal=0.9, mask=None, scale=1,
                  color_func=random_color_func, max_words=200, min_font_size=4,
                  stopwords=None, random_state=None, background_color='black',
-                 max_font_size=None, font_step=1, mode="RGB", relative_scaling=0):
-        if stopwords is None:
-            stopwords = STOPWORDS
+                 max_font_size=None, font_step=1, mode="RGB", relative_scaling=0, regexp=None):
         if font_path is None:
             font_path = FONT_PATH
         self.font_path = font_path
@@ -178,9 +215,10 @@ class WordCloud(object):
         self.scale = scale
         self.color_func = color_func
         self.max_words = max_words
-        self.stopwords = stopwords
+        self.stopwords = stopwords or STOPWORDS
         self.min_font_size = min_font_size
         self.font_step = font_step
+        self.regexp = regexp
         if isinstance(random_state, int):
             random_state = Random(random_state)
         self.random_state = random_state
@@ -227,13 +265,12 @@ class WordCloud(object):
 
         """
         # make sure frequencies are sorted and normalized
-        frequencies = sorted(frequencies, key=lambda x: x[1], reverse=True)
+        frequencies = sorted(frequencies, key=item1, reverse=True)
         frequencies = frequencies[:self.max_words]
         # largest entry will be 1
-        max_frequency = float(np.max([freq for word, freq in frequencies]))
+        max_frequency = float(frequencies[0][1])
 
-        for i, (word, freq) in enumerate(frequencies):
-            frequencies[i] = word, freq / max_frequency
+        frequencies = [(word, freq / max_frequency) for word, freq in frequencies]
 
         self.words_ = frequencies
 
@@ -290,9 +327,8 @@ class WordCloud(object):
                     orientation = Image.ROTATE_90
                 transposed_font = ImageFont.TransposedFont(font,
                                                            orientation=orientation)
-                draw.setfont(transposed_font)
                 # get size of resulting text
-                box_size = draw.textsize(word)
+                box_size = draw.textsize(word, font=transposed_font)
                 # find possible places using integral image:
                 result = occupancy.sample_position(box_size[1] + self.margin,
                                                    box_size[0] + self.margin,
@@ -308,7 +344,7 @@ class WordCloud(object):
 
             x, y = np.array(result) + self.margin // 2
             # actually draw the text
-            draw.text((y, x), word, fill="white")
+            draw.text((y, x), word, fill="white", font=transposed_font)
             positions.append((x, y))
             orientations.append(orientation)
             font_sizes.append(font_size)
@@ -349,42 +385,47 @@ class WordCloud(object):
         include all those things.
         """
 
+        self.stopwords_lower_ = set(map(str.lower, self.stopwords))
+
         d = {}
         flags = (re.UNICODE if sys.version < '3' and type(text) is unicode
                  else 0)
-        for word in re.findall(r"\w[\w']*", text, flags=flags):
+        regexp = self.regexp if self.regexp is not None else r"\w[\w']+"
+        for word in re.findall(regexp, text, flags=flags):
             if word.isdigit():
                 continue
 
             word_lower = word.lower()
-            if word_lower in self.stopwords:
+            if word_lower in self.stopwords_lower_:
                 continue
 
             # Look in lowercase dict.
-            if word_lower in d:
+            try:
                 d2 = d[word_lower]
-            else:
+            except KeyError:
                 d2 = {}
                 d[word_lower] = d2
 
             # Look in any case dict.
             d2[word] = d2.get(word, 0) + 1
 
+        # merge plurals into the singular count (simple cases only)
+        for key in list(d.keys()):
+            if key.endswith('s'):
+                key_singular = key[:-1]
+                if key_singular in d:
+                    dict_plural = d[key]
+                    dict_singular = d[key_singular]
+                    for word, count in dict_plural.items():
+                        singular = word[:-1]
+                        dict_singular[singular] = dict_singular.get(singular, 0) + count
+                    del d[key]
+
         d3 = {}
         for d2 in d.values():
             # Get the most popular case.
             first = max(d2.items(), key=item1)[0]
             d3[first] = sum(d2.values())
-
-        # merge plurals into the singular count (simple cases only)
-        for key in list(d3.keys()):
-            if key.endswith('s'):
-                key_singular = key[:-1]
-                if key_singular in d3:
-                    val_plural = d3[key]
-                    val_singular = d3[key_singular]
-                    d3[key_singular] = val_singular + val_plural
-                    del d3[key]
 
         return d3.items()
 
@@ -427,16 +468,15 @@ class WordCloud(object):
         else:
             height, width = self.height, self.width
 
-        img = Image.new(self.mode, (width * self.scale, height * self.scale),
+        img = Image.new(self.mode, (int(width * self.scale), int(height * self.scale)),
                         self.background_color)
         draw = ImageDraw.Draw(img)
         for (word, count), font_size, position, orientation, color in self.layout_:
-            font = ImageFont.truetype(self.font_path, font_size * self.scale)
+            font = ImageFont.truetype(self.font_path, int(font_size * self.scale))
             transposed_font = ImageFont.TransposedFont(font,
                                                        orientation=orientation)
-            draw.setfont(transposed_font)
-            pos = (position[1] * self.scale, position[0] * self.scale)
-            draw.text(pos, word, fill=color)
+            pos = (int(position[1] * self.scale), int(position[0] * self.scale))
+            draw.text(pos, word, fill=color, font=transposed_font)
         return img
 
     def recolor(self, random_state=None, color_func=None):
